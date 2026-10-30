@@ -1,0 +1,16 @@
+# @module BLE "Bluetooth LE"
+# @module BLE -> HAL
+menu "Bluetooth LE"
+
+choice
+    prompt "BLE Stack"
+config BLE_NIMBLE
+    bool "NimBLE"
+config BLE_BLUEDROID
+    bool "Bluedroid"
+endchoice
+
+config BLE_MESH
+    bool "BLE Mesh support"
+
+endmenu

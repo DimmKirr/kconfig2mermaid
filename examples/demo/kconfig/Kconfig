@@ -1,0 +1,7 @@
+mainmenu "Demo Firmware"
+
+source "hal.kconfig"
+source "ble.kconfig"
+source "audio.kconfig"
+source "ui.kconfig"
+source "ota.kconfig"

@@ -1,0 +1,22 @@
+# @module AUDIO
+# @module AUDIO -> HAL
+# @module AUDIO --> BLE "streaming"
+menu "Audio"
+
+choice
+    prompt "Audio Codec"
+config AUDIO_CODEC_AAC
+    bool "AAC"
+config AUDIO_CODEC_SBC
+    bool "SBC"
+config AUDIO_CODEC_OPUS
+    bool "Opus"
+endchoice
+
+config AUDIO_DSP
+    bool "DSP pipeline"
+
+config AUDIO_MIXER
+    bool "Audio mixer"
+
+endmenu

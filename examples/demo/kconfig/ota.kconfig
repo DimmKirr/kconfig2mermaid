@@ -1,0 +1,11 @@
+# @module OTA "Over-the-Air Updates"
+# @module OTA --> BLE "transport"
+menu "Over-the-Air Updates"
+
+config OTA_ROLLBACK
+    bool "Rollback support"
+
+config OTA_ENCRYPTION
+    bool "Encrypted payloads"
+
+endmenu

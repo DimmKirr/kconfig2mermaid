@@ -1,0 +1,15 @@
+# @module UI "User Interface"
+# @module UI -> HAL
+# @module UI --> AUDIO "playback control"
+menu "User Interface"
+
+config UI_DISPLAY
+    bool "Display driver"
+
+config UI_TOUCH
+    bool "Touch input"
+
+config UI_LED
+    bool "LED indicators"
+
+endmenu
