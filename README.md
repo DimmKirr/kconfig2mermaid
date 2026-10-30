@@ -1,6 +1,6 @@
 # kconfig2mermaid
 
-Generate Mermaid module diagrams from Kconfig `@module` annotations.
+Generate Mermaid module diagrams from Kconfig files. Zero annotations required.
 
 ```mermaid
 %%{init: {"flowchart": {"curve": "step"}} }%%
@@ -12,17 +12,24 @@ flowchart TB
     UI["<b>User Interface</b><br/><small>display · touch · led</small>"]
 
     AUDIO --> HAL
-    AUDIO -.->|streaming| BLE
+    AUDIO -.-> BLE
     BLE --> HAL
-    OTA -.->|transport| BLE
+    OTA -.-> BLE
     UI --> HAL
-    UI -.->|playback control| AUDIO
+    UI -.-> AUDIO
     OTA --> HAL
 ```
 
-## Why?
+## How it works
 
-Embedded firmware projects use Kconfig for build configuration, but the module structure and dependencies live only in developers' heads. kconfig2mermaid reads lightweight comment annotations from your existing `.kconfig` files and produces a Mermaid diagram: modules with their components, hard dependencies, and optional links. The diagram stays in sync with the code because it's generated from it.
+Point it at a directory of `.kconfig` files. Each file becomes a module. The diagram is derived entirely from standard Kconfig constructs:
+
+1. **Modules**: each `.kconfig` file is a module. ID from the filename (`ble.kconfig` -> `BLE`), display name from the first `menu "..."` title.
+2. **Hard dependencies**: `depends on` and `select` referencing a symbol that belongs to another module produce a solid arrow.
+3. **Optional relationships**: `imply` referencing another module produces a dashed arrow.
+4. **Components**: `choice` blocks and `config` symbols with `bool` prompts are listed inside the module box.
+
+No custom syntax needed. Kconfig already has the information; kconfig2mermaid reads it.
 
 ## Install
 
@@ -32,15 +39,20 @@ pip install kconfig2mermaid
 
 ## Quick Start
 
-Add `@module` annotations to your `.kconfig` files:
+Every `.kconfig` file becomes a module automatically:
 
 ```kconfig
-# @module BLE "Bluetooth LE"
-# @module BLE -> HAL
 menu "Bluetooth LE"
+    depends on HAL
+
+config BLE
+    bool "Enable Bluetooth LE"
+    select HAL_SPI
+    imply AUDIO
 
 choice
     prompt "BLE Stack"
+    depends on BLE
 config BLE_NIMBLE
     bool "NimBLE"
 config BLE_BLUEDROID
@@ -61,19 +73,28 @@ Or inject it directly into a markdown file:
 kc2mm inject README.md --kconf-dir path/to/kconfig/
 ```
 
-## Annotation Reference
+## What gets derived
 
-| Annotation | Effect |
+| Kconfig construct | Diagram result |
 |---|---|
-| `# @module` | Declare module (ID from filename) |
-| `# @module ID` | Declare module with explicit ID |
-| `# @module ID "Name"` | Declare module with display name |
-| `# @module ID : a · b · c` | Explicit component list |
-| `# @module ID -> TARGET` | Solid arrow (hard dependency) |
-| `# @module ID --> TARGET` | Dashed arrow (optional dependency) |
-| `# @module ID --> TARGET "label"` | Dashed arrow with label |
+| `depends on` / `select` across modules | Solid arrow (hard dependency) |
+| `imply` across modules | Dashed arrow (optional relationship) |
+| `choice` blocks | Component labels |
+| `config` with `bool` prompt | Component labels |
+| `menu "Title"` | Module display name |
+| Filename (`ble.kconfig`) | Module ID (`BLE`) |
 
-When no explicit components are given, they are auto-derived from `choice` blocks and `config` symbols with `bool` prompts.
+## Overrides
+
+Everything is auto-derived, but you can override when needed:
+
+| Comment | Effect |
+|---|---|
+| `# kc2mm:ignore` | Exclude this file from the diagram |
+| `# @module ID "Name"` | Override module ID and/or display name |
+| `# @module ID : a · b · c` | Override auto-derived components |
+| `# @module ID -> TARGET` | Add an explicit solid arrow |
+| `# @module ID --> TARGET "label"` | Add an explicit dashed arrow with label |
 
 ## CLI
 
@@ -91,7 +112,7 @@ kc2mm inject FILE --kconf-dir DIR [--check]
 
 ## Example
 
-See [examples/demo/](examples/demo/) for a complete working example with five embedded firmware modules and annotated Kconfig files.
+See [examples/demo/](examples/demo/) for a complete working example with five embedded firmware modules.
 
 ## License
 

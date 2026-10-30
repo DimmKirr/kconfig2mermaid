@@ -1,16 +1,25 @@
 # @module BLE "Bluetooth LE"
-# @module BLE -> HAL
 menu "Bluetooth LE"
+    depends on HAL
+
+config BLE
+    bool "Enable Bluetooth LE"
+    select HAL_SPI
 
 choice
     prompt "BLE Stack"
+    depends on BLE
+
 config BLE_NIMBLE
     bool "NimBLE"
+
 config BLE_BLUEDROID
     bool "Bluedroid"
+
 endchoice
 
 config BLE_MESH
     bool "BLE Mesh support"
+    depends on BLE
 
 endmenu

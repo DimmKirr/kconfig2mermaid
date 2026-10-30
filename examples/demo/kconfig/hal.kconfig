@@ -1,13 +1,20 @@
 # @module HAL "Hardware Abstraction"
 menu "HAL"
 
+config HAL
+    bool "Enable HAL"
+    default y
+
 config HAL_SPI
     bool "SPI driver"
+    depends on HAL
 
 config HAL_I2S
     bool "I2S driver"
+    depends on HAL
 
 config HAL_GPIO
     bool "GPIO driver"
+    depends on HAL
 
 endmenu

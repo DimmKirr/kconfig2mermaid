@@ -1,22 +1,22 @@
-"""Parse Kconfig files for @module annotations.
+"""Parse Kconfig files into module diagrams.
 
-Annotation format (in kconfig comment lines):
-    # @module                             declare this file as a module (ID from filename)
-    # @module ID                          declare module with explicit ID
-    # @module ID "Override Name"          declare with explicit display name
-    # @module [ID] : comp · list          explicit component line (overrides auto-derive)
-    # @module [ID] -> TARGET              solid arrow (hard dependency)
-    # @module [ID] --> TARGET             dashed arrow (optional dependency)
-    # @module [ID] --> TARGET "label"     dashed arrow with edge label
+Every .kconfig file is included as a module by default.
+Add '# kc2mm:ignore' to exclude a file from the diagram.
 
-When ID is omitted in edge/component lines, the file's default module ID is used.
-Files without any @module annotation are not included in the diagram.
+Optional overrides (in kconfig comment lines):
+    # @module ID                          override module ID (default: from filename)
+    # @module ID "Override Name"          override display name (default: from menu title)
+    # @module [ID] : comp · list          override auto-derived component list
+    # @module [ID] -> TARGET              explicit solid arrow (hard dependency)
+    # @module [ID] --> TARGET "label"     explicit dashed arrow with label
 
 Auto-derived:
     - Module ID from filename (ble.kconfig -> BLE)
     - Display name from 'menu "Title"' in the file
     - Components from choice prompts (short labels) and standalone config symbols
-    - '-> HAL' edge for every non-HAL module (when a HAL module exists)
+    - Cross-module edges from depends on/select (solid) and imply (dashed)
+    - '-> HAL' edge for every non-HAL module (when a HAL module exists and
+      no dependency on HAL was already inferred)
 """
 import re
 from pathlib import Path
@@ -31,6 +31,9 @@ SKIP_SYMBOLS = {"GEN_FELUCCA_UI", "ENGINES"}
 SKIP_WORDS = {"stub", "test"}
 MAX_COMPONENTS_PER_LINE = 6
 
+RE_IGNORE = re.compile(r'^#\s*kc2mm:ignore\b')
+RE_LABEL = re.compile(r'^#\s*kc2mm:label\s+"([^"]+)"')
+RE_HIDE = re.compile(r'^#\s*kc2mm:hide\b')
 RE_MOD_BARE = re.compile(r'^#\s*@module\s*$')
 RE_MOD_ID = re.compile(r'^#\s*@module\s+(\w+)\s*$')
 RE_MOD_NAMED = re.compile(r'^#\s*@module\s+(\w+)\s+"([^"]+)"\s*$')
@@ -43,6 +46,10 @@ RE_BOOL_PROMPT = re.compile(r'^\s+bool\s+"([^"]+)"')
 RE_CHOICE = re.compile(r'^choice\b')
 RE_CHOICE_PROMPT = re.compile(r'^\s+prompt\s+"([^"]+)"')
 RE_ENDCHOICE = re.compile(r'^endchoice\b')
+RE_DEPENDS = re.compile(r'^\s+depends\s+on\s+(.+)$')
+RE_SELECT = re.compile(r'^\s+select\s+(\w+)')
+RE_IMPLY = re.compile(r'^\s+imply\s+(\w+)')
+RE_SYMBOL_REF = re.compile(r'(?<!!)\b([A-Z][A-Z0-9_]*)\b')
 
 
 def _id_from_filename(path):
@@ -110,6 +117,15 @@ def _auto_derive_components(file_lines, module_id, long_names=False):
         line = file_lines[i]
 
         if RE_CHOICE.match(line):
+            custom_label = None
+            hidden = False
+            if i > 0:
+                lm = RE_LABEL.match(file_lines[i - 1])
+                if lm:
+                    custom_label = lm.group(1)
+                if RE_HIDE.match(file_lines[i - 1]):
+                    hidden = True
+
             prompt = None
             first_config = None
             j = i + 1
@@ -123,8 +139,9 @@ def _auto_derive_components(file_lines, module_id, long_names=False):
                         first_config = cm.group(1)
                 j += 1
 
-            if prompt:
-                label = _choice_label(prompt, first_config, prefix, long_names)
+            if not hidden and prompt:
+                label = custom_label or _choice_label(
+                    prompt, first_config, prefix, long_names)
                 if label and not any(w in label.lower() for w in SKIP_WORDS):
                     if label not in components:
                         components.append(label)
@@ -134,7 +151,19 @@ def _auto_derive_components(file_lines, module_id, long_names=False):
         cm = RE_CONFIG.match(line)
         if cm:
             sym = cm.group(1)
+
+            custom_label = None
+            hidden = False
+            if i > 0:
+                lm = RE_LABEL.match(file_lines[i - 1])
+                if lm:
+                    custom_label = lm.group(1)
+                if RE_HIDE.match(file_lines[i - 1]):
+                    hidden = True
+
             if sym == module_id or sym in SKIP_SYMBOLS:
+                if custom_label and not hidden:
+                    components.append(custom_label)
                 i += 1
                 continue
 
@@ -149,13 +178,158 @@ def _auto_derive_components(file_lines, module_id, long_names=False):
                     is_visible = True
                 j += 1
 
-            if is_visible:
+            if hidden:
+                pass
+            elif custom_label:
+                components.append(custom_label)
+            elif is_visible:
                 label = _symbol_to_label(sym, prefix, long_names)
                 if label and not any(w in label.lower() for w in SKIP_WORDS):
                     components.append(label)
         i += 1
 
     return components
+
+
+def _resolve_module(symbol, modules, source_module):
+    """Find which module a symbol belongs to, if not the source module."""
+    if symbol in modules and symbol != source_module:
+        return symbol
+    for mid in modules:
+        if mid != source_module and symbol.startswith(mid + "_"):
+            return mid
+    return None
+
+
+def _infer_edges(modules, file_refs):
+    """Infer cross-module edges from depends on/select/imply references."""
+    edges = []
+    seen = set()
+    for src_module, refs in file_refs.items():
+        for dep_type, symbol in refs:
+            target = _resolve_module(symbol, modules, src_module)
+            if target:
+                style = "dashed" if dep_type == "imply" else "solid"
+                key = (src_module, target, style)
+                if key not in seen:
+                    seen.add(key)
+                    edges.append({"from": src_module, "to": target,
+                                  "style": style, "label": None})
+    return edges
+
+
+def _collect_kconfig_refs(file_lines):
+    """Collect all depends on/select/imply symbol references from a file."""
+    refs = []
+    for line in file_lines:
+        m = RE_DEPENDS.match(line)
+        if m:
+            for sym in RE_SYMBOL_REF.findall(m.group(1)):
+                refs.append(("depends", sym))
+            continue
+        m = RE_SELECT.match(line)
+        if m:
+            refs.append(("select", m.group(1)))
+            continue
+        m = RE_IMPLY.match(line)
+        if m:
+            refs.append(("imply", m.group(1)))
+    return refs
+
+
+def _collect_refs_by_config(file_lines):
+    """Collect refs grouped by the config symbol they belong to.
+
+    Returns list of (config_symbol, [(dep_type, referenced_symbol), ...]).
+    Menu-level depends-on lines (before any config) use None as the symbol.
+    """
+    groups = []
+    current_sym = None
+    current_refs = []
+
+    for line in file_lines:
+        cm = RE_CONFIG.match(line)
+        if cm:
+            if current_refs:
+                groups.append((current_sym, current_refs))
+            current_sym = cm.group(1)
+            current_refs = []
+            continue
+
+        if RE_CHOICE.match(line):
+            if current_refs:
+                groups.append((current_sym, current_refs))
+            current_sym = None
+            current_refs = []
+            continue
+
+        m = RE_DEPENDS.match(line)
+        if m:
+            for sym in RE_SYMBOL_REF.findall(m.group(1)):
+                current_refs.append(("depends", sym))
+            continue
+        m = RE_SELECT.match(line)
+        if m:
+            current_refs.append(("select", m.group(1)))
+            continue
+        m = RE_IMPLY.match(line)
+        if m:
+            current_refs.append(("imply", m.group(1)))
+
+    if current_refs:
+        groups.append((current_sym, current_refs))
+    return groups
+
+
+def _reverse_trace_ignored(ignored_files, modules, symbol_to_module, edges,
+                           parent_components):
+    """Scan ignored files for cross-module deps and add dashed edges.
+
+    For each ignored file, determine a parent module (the module owning the
+    first cross-module symbol referenced in a depends-on line). Other
+    cross-module references become dashed edges from parent to target.
+    The ignored file's menu title is contributed as a component of the parent.
+    """
+    existing = {(e["from"], e["to"]) for e in edges}
+
+    for _kf, file_lines in ignored_files:
+        refs = _collect_kconfig_refs(file_lines)
+
+        menu_title = None
+        for line in file_lines:
+            mm = RE_MENU.match(line)
+            if mm:
+                menu_title = mm.group(1)
+                break
+
+        if not refs:
+            continue
+
+        parent = None
+        targets = []
+        for dep_type, symbol in refs:
+            target = symbol_to_module.get(symbol)
+            if not target or target not in modules:
+                target = _resolve_module(symbol, modules, None)
+            if target and target in modules:
+                if parent is None:
+                    parent = target
+                elif target != parent:
+                    targets.append(target)
+
+        if not parent:
+            continue
+
+        if menu_title:
+            parent_components.setdefault(parent, []).append(menu_title)
+
+        seen = set()
+        for target in targets:
+            if target not in seen and (parent, target) not in existing:
+                seen.add(target)
+                existing.add((parent, target))
+                edges.append({"from": parent, "to": target,
+                              "style": "dashed", "label": None})
 
 
 def _group_components(components):
@@ -185,18 +359,24 @@ def parse(kconf_dir, *, hal_module="HAL", skip_symbols=None, long_names=False):
     kconf_dir = Path(kconf_dir)
     modules = {}
     edges = []
+    file_refs = {}
+    symbol_to_module = {}
+    ignored_files = []
     order = 0
 
     for kf in sorted(kconf_dir.glob("*.kconfig")):
         file_lines = kf.read_text().splitlines()
         file_default_id = _id_from_filename(kf)
+
+        if any(RE_IGNORE.match(line) for line in file_lines):
+            ignored_files.append((kf, file_lines))
+            continue
+
         file_module_ids = []
         file_has_comp_override = set()
-        has_module_annotation = False
 
         for line in file_lines:
             if RE_MOD_BARE.match(line):
-                has_module_annotation = True
                 mid = file_default_id
                 if mid not in modules:
                     file_module_ids.append(mid)
@@ -207,7 +387,6 @@ def parse(kconf_dir, *, hal_module="HAL", skip_symbols=None, long_names=False):
 
             m = RE_MOD_NAMED.match(line)
             if m:
-                has_module_annotation = True
                 mid, name = m.group(1), m.group(2)
                 if mid not in modules:
                     file_module_ids.append(mid)
@@ -220,7 +399,6 @@ def parse(kconf_dir, *, hal_module="HAL", skip_symbols=None, long_names=False):
 
             m = RE_MOD_ID.match(line)
             if m:
-                has_module_annotation = True
                 mid = m.group(1)
                 if mid not in modules:
                     file_module_ids.append(mid)
@@ -231,7 +409,6 @@ def parse(kconf_dir, *, hal_module="HAL", skip_symbols=None, long_names=False):
 
             m = RE_COMP.match(line)
             if m:
-                has_module_annotation = True
                 mid = m.group(1) or (file_module_ids[0] if file_module_ids else file_default_id)
                 comps = m.group(2).strip()
                 file_has_comp_override.add(mid)
@@ -245,7 +422,6 @@ def parse(kconf_dir, *, hal_module="HAL", skip_symbols=None, long_names=False):
 
             m = RE_EDGE_SOLID.match(line)
             if m:
-                has_module_annotation = True
                 src = m.group(1) or (file_module_ids[0] if file_module_ids else file_default_id)
                 edges.append({"from": src, "to": m.group(2),
                               "style": "solid", "label": None})
@@ -253,14 +429,18 @@ def parse(kconf_dir, *, hal_module="HAL", skip_symbols=None, long_names=False):
 
             m = RE_EDGE_DASHED.match(line)
             if m:
-                has_module_annotation = True
                 src = m.group(1) or (file_module_ids[0] if file_module_ids else file_default_id)
                 edges.append({"from": src, "to": m.group(2),
                               "style": "dashed", "label": m.group(3)})
                 continue
 
-        if not has_module_annotation:
-            continue
+        if not file_module_ids:
+            mid = file_default_id
+            file_module_ids.append(mid)
+            if mid not in modules:
+                modules[mid] = {"name": None, "components": [],
+                                "order": order}
+                order += 1
 
         menu_title = None
         for line in file_lines:
@@ -282,6 +462,51 @@ def parse(kconf_dir, *, hal_module="HAL", skip_symbols=None, long_names=False):
                 auto = _auto_derive_components(file_lines, mid, long_names)
                 if auto:
                     modules[mid]["components"] = _group_components(auto)
+
+        for line in file_lines:
+            cm = RE_CONFIG.match(line)
+            if cm:
+                sym = cm.group(1)
+                if file_module_ids:
+                    for mid in file_module_ids:
+                        if sym == mid or sym.startswith(mid + "_"):
+                            symbol_to_module[sym] = mid
+                            break
+                    else:
+                        symbol_to_module[sym] = file_module_ids[0]
+
+        if len(file_module_ids) > 1:
+            ref_groups = _collect_refs_by_config(file_lines)
+            for config_sym, refs in ref_groups:
+                owner = None
+                if config_sym:
+                    owner = symbol_to_module.get(config_sym)
+                if not owner:
+                    owner = file_module_ids[0]
+                file_refs.setdefault(owner, []).extend(refs)
+        else:
+            refs = _collect_kconfig_refs(file_lines)
+            if refs:
+                for mid in file_module_ids:
+                    file_refs.setdefault(mid, []).extend(refs)
+
+    parent_components = {}
+    _reverse_trace_ignored(ignored_files, modules, symbol_to_module, edges,
+                           parent_components)
+    for mid, comps in parent_components.items():
+        if mid in modules:
+            existing_lines = modules[mid].get("components") or []
+            flat = []
+            for line in existing_lines:
+                flat.extend(c.strip() for c in line.split("·") if c.strip())
+            flat.extend(comps)
+            modules[mid]["components"] = _group_components(flat)
+
+    inferred = _infer_edges(modules, file_refs)
+    existing = {(e["from"], e["to"], e["style"]) for e in edges}
+    for e in inferred:
+        if (e["from"], e["to"], e["style"]) not in existing:
+            edges.append(e)
 
     if hal_module and hal_module in modules:
         hal_edges = {e["from"] for e in edges if e["to"] == hal_module}

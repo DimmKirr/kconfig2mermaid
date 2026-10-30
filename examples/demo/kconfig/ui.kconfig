@@ -1,15 +1,22 @@
 # @module UI "User Interface"
-# @module UI -> HAL
-# @module UI --> AUDIO "playback control"
 menu "User Interface"
+    depends on HAL
+
+config UI
+    bool "Enable UI"
+    select HAL_GPIO
+    imply AUDIO
 
 config UI_DISPLAY
     bool "Display driver"
+    depends on UI
 
 config UI_TOUCH
     bool "Touch input"
+    depends on UI
 
 config UI_LED
     bool "LED indicators"
+    depends on UI
 
 endmenu

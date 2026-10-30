@@ -29,27 +29,31 @@ flowchart TB
     UI["<b>User Interface</b><br/><small>display · touch · led</small>"]
 
     AUDIO --> HAL
-    AUDIO -.->|streaming| BLE
+    AUDIO -.-> BLE
     BLE --> HAL
-    OTA -.->|transport| BLE
+    OTA -.-> BLE
     UI --> HAL
-    UI -.->|playback control| AUDIO
+    UI -.-> AUDIO
     OTA --> HAL
 ```
 <!-- module-diagram:end -->
 
-## What the annotations look like
+## How it works
 
-Each `.kconfig` file uses comment annotations to declare modules and their relationships:
+Every `.kconfig` file is a module by default. Everything is derived from standard Kconfig:
 
 ```kconfig
-# @module AUDIO
-# @module AUDIO -> HAL
-# @module AUDIO --> BLE "streaming"
 menu "Audio"
+    depends on HAL
+
+config AUDIO
+    bool "Enable Audio"
+    select HAL_I2S
+    imply BLE
 
 choice
     prompt "Audio Codec"
+    depends on AUDIO
 config AUDIO_CODEC_AAC
     bool "AAC"
 config AUDIO_CODEC_SBC
@@ -58,13 +62,15 @@ endchoice
 
 config AUDIO_DSP
     bool "DSP pipeline"
+    depends on AUDIO
 endmenu
 ```
 
-- `# @module` declares a module (ID derived from filename, display name from `menu` title)
-- `->` creates a solid arrow (hard dependency)
-- `-->` creates a dashed arrow (optional dependency) with an optional label
+- Module ID from filename (`audio.kconfig` -> `AUDIO`), display name from `menu` title
+- `depends on` / `select` across modules produce solid arrows (hard dependency)
+- `imply` across modules produces dashed arrows (optional relationship)
 - Components are auto-derived from `choice` blocks and `config` symbols with `bool` prompts
+- Add `# kc2mm:ignore` to exclude a file from the diagram
 
 ## Keep it in sync
 
